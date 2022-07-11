@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.7.0 <0.9.0;
 
+import "@openzeppelin/contracts/utils/Counters.sol";
+
 contract CourseMarketplace {
+
+  using Counters for Counters.Counter;
+  Counters.Counter private _courseId;
 
   enum State {
     Purchased,
@@ -68,23 +73,28 @@ contract CourseMarketplace {
 
   receive() external payable {}
 
+  // withdraw some amount from contract
   function withdraw(uint amount)
     external
     onlyOwner
   {
+    require(amount <= address(this).balance, "not enough ethers to withdraw");
     (bool success, ) = owner.call{value: amount}("");
     require(success, "Transfer failed.");
   }
 
+  // withdraw all amount from contract
   function emergencyWithdraw()
     external
     onlyWhenStopped
     onlyOwner
   {
+    require(address(this).balance > 0, "not enough ethers to withdraw");
     (bool success, ) = owner.call{value: address(this).balance}("");
     require(success, "Transfer failed.");
   }
 
+  // destroy contract
   function selfDestruct()
     external
     onlyWhenStopped
@@ -93,6 +103,7 @@ contract CourseMarketplace {
     selfdestruct(owner);
   }
 
+  // pause contract execution
   function stopContract()
     external
     onlyOwner
@@ -100,6 +111,7 @@ contract CourseMarketplace {
     isStopped = true;
   }
 
+  // resume contract execution
   function resumeContract()
     external
     onlyOwner
@@ -107,6 +119,7 @@ contract CourseMarketplace {
     isStopped = false;
   }
 
+  // purchase a new course 
   function purchaseCourse(
     bytes16 courseId, // 0x00000000000000000000000000003130
     bytes32 proof // 0x0000000000000000000000000000313000000000000000000000000000003130
@@ -114,25 +127,46 @@ contract CourseMarketplace {
     external
     payable
     onlyWhenNotStopped
-  {
+  {    
+    bytes32 courseHash = keccak256(abi.encodePacked(courseId, msg.sender));
+
+    if (hasCourseOwnership(courseHash)) {
+      revert CourseHasOwner();
+    }
+    Course storage course = ownedCourses[courseHash];
+    address payable seller = payable(course.owner);
+    require(msg.value >= course.price, "ether sent too low for course price");
+    require(proof == course.proof, "invalid proof");
+    course.state = State.Purchased;
+    course.owner = msg.sender;
+
+    (bool sent, ) = seller.call{value: msg.value}("");
+    require(sent, "sent unsuccessful");
+   
+  }
+
+  function createCourse(bytes32 proof, uint256 price) public {
+
+    uint256 courseId = _courseId.current();
+    _courseId.increment();
+
     bytes32 courseHash = keccak256(abi.encodePacked(courseId, msg.sender));
 
     if (hasCourseOwnership(courseHash)) {
       revert CourseHasOwner();
     }
 
-    uint id = totalOwnedCourses++;
-
-    ownedCourseHash[id] = courseHash;
+    ownedCourseHash[courseId] = courseHash;
     ownedCourses[courseHash] = Course({
-      id: id,
-      price: msg.value,
+      id: courseId,
+      price: price,
       proof: proof,
       owner: msg.sender,
       state: State.Purchased
     });
   }
 
+  // re-purchase a course
   function repurchaseCourse(bytes32 courseHash)
     external
     payable
@@ -156,6 +190,7 @@ contract CourseMarketplace {
     course.price = msg.value;
   }
 
+  // activate  a course
   function activateCourse(bytes32 courseHash)
     external
     onlyWhenNotStopped
@@ -174,6 +209,7 @@ contract CourseMarketplace {
     course.state = State.Activated;
   }
 
+  // deactivate a course
   function deactivateCourse(bytes32 courseHash)
     external
     onlyWhenNotStopped
@@ -189,13 +225,14 @@ contract CourseMarketplace {
       revert InvalidState();
     }
 
-    (bool success, ) = course.owner.call{value: course.price}("");
-    require(success, "Transfer failed!");
-
     course.state = State.Deactivated;
     course.price = 0;
+
+    (bool success, ) = course.owner.call{value: course.price}("");
+    require(success, "Transfer failed!");   
   }
 
+  // transfer owner of contract to new owner
   function transferOwnership(address newOwner)
     external
     onlyOwner
@@ -203,6 +240,7 @@ contract CourseMarketplace {
     setContractOwner(newOwner);
   }
 
+  // get total number of course created
   function getCourseCount()
     external
     view
@@ -211,6 +249,7 @@ contract CourseMarketplace {
     return totalOwnedCourses;
   }
 
+  // get hash index of a course
   function getCourseHashAtIndex(uint index)
     external
     view
@@ -219,6 +258,7 @@ contract CourseMarketplace {
     return ownedCourseHash[index];
   }
 
+  // get course by it's hash
   function getCourseByHash(bytes32 courseHash)
     external
     view
@@ -227,6 +267,7 @@ contract CourseMarketplace {
     return ownedCourses[courseHash];
   }
 
+  // get owner of contract
   function getContractOwner()
     public
     view
@@ -235,18 +276,21 @@ contract CourseMarketplace {
     return owner;
   }
 
+  // set new contract owner
   function setContractOwner(address newOwner) private {
     owner = payable(newOwner);
   }
 
+  // check if course is created
   function isCourseCreated(bytes32 courseHash)
     private
     view
     returns (bool)
   {
-    return ownedCourses[courseHash].owner != 0x0000000000000000000000000000000000000000;
+    return ownedCourses[courseHash].owner != address(0);
   }
 
+  // check if msg.sender owns course
   function hasCourseOwnership(bytes32 courseHash)
     private
     view
